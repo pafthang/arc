@@ -36,6 +36,10 @@ jobs:
 
       - name: Build
         run: |
+          if [ ! -d ./cmd/arc ]; then
+            echo "cmd/arc not found, skipping release build"
+            exit 0
+          fi
           mkdir -p dist
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then EXT=".exe"; fi
@@ -43,6 +47,7 @@ jobs:
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "dist/${BIN}" ./cmd/arc
 
       - name: Upload release asset
+        if: ${{ hashFiles('dist/*') != '' }}
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*

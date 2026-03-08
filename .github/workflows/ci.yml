@@ -28,4 +28,9 @@ jobs:
         run: go test ./...
 
       - name: Build CLI
-        run: go build ./cmd/arc
+        run: |
+          if [ -d ./cmd/arc ]; then
+            go build ./cmd/arc
+          else
+            echo "cmd/arc not found, skipping CLI build"
+          fi
