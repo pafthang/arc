@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -125,6 +126,19 @@ func (r *OperationRegistry) OpenAPISpec() map[string]any {
 	usedTags := map[string]struct{}{}
 	usedSecurity := map[string]struct{}{}
 	schemaGen := newSchemaGen(components["schemas"].(map[string]any))
+	schemas := components["schemas"].(map[string]any)
+	schemas["Problem"] = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"type":      map[string]any{"type": "string"},
+			"title":     map[string]any{"type": "string"},
+			"status":    map[string]any{"type": "integer"},
+			"detail":    map[string]any{"type": "string"},
+			"code":      map[string]any{"type": "string"},
+			"requestId": map[string]any{"type": "string"},
+		},
+		"required": []string{"type", "title", "status"},
+	}
 
 	for _, op := range r.List() {
 		path := toOpenAPIPath(op.Path)
@@ -136,6 +150,14 @@ func (r *OperationRegistry) OpenAPISpec() map[string]any {
 			"operationId": op.OperationID,
 			"responses": map[string]any{
 				"200": map[string]any{"description": "OK"},
+				"default": map[string]any{
+					"description": "Error",
+					"content": map[string]any{
+						"application/problem+json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/Problem"},
+						},
+					},
+				},
 			},
 		}
 		if len(op.Tags) > 0 {
@@ -551,10 +573,17 @@ func nullableSchema(schema map[string]any) map[string]any {
 type schemaGen struct {
 	components map[string]any
 	seen       map[reflect.Type]bool
+	typeNames  map[reflect.Type]string
+	nameOwners map[string]reflect.Type
 }
 
 func newSchemaGen(components map[string]any) *schemaGen {
-	return &schemaGen{components: components, seen: map[reflect.Type]bool{}}
+	return &schemaGen{
+		components: components,
+		seen:       map[reflect.Type]bool{},
+		typeNames:  map[reflect.Type]string{},
+		nameOwners: map[string]reflect.Type{},
+	}
 }
 
 func (g *schemaGen) refOrInline(t reflect.Type) map[string]any {
@@ -571,7 +600,7 @@ func (g *schemaGen) refOrInline(t reflect.Type) map[string]any {
 	if t.Kind() != reflect.Struct {
 		schema = g.inline(t)
 	} else {
-		name := t.Name()
+		name := g.componentNameFor(t)
 		if name == "" {
 			schema = g.inline(t)
 		} else {
@@ -586,6 +615,61 @@ func (g *schemaGen) refOrInline(t reflect.Type) map[string]any {
 		return nullableSchema(schema)
 	}
 	return schema
+}
+
+func (g *schemaGen) componentNameFor(t reflect.Type) string {
+	if t == nil {
+		return ""
+	}
+	if name, ok := g.typeNames[t]; ok {
+		return name
+	}
+	base := sanitizeSchemaName(t.Name())
+	if base == "" {
+		return ""
+	}
+	name := base
+	if owner, exists := g.nameOwners[name]; exists && owner != t {
+		for i := 2; ; i++ {
+			candidate := base + "_" + strconv.Itoa(i)
+			if owner, taken := g.nameOwners[candidate]; !taken || owner == t {
+				name = candidate
+				break
+			}
+		}
+	}
+	g.typeNames[t] = name
+	g.nameOwners[name] = t
+	return name
+}
+
+func sanitizeSchemaName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b.WriteByte(c)
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c)
+		case c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case c == '.', c == '-', c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "._-")
+	if out == "" {
+		return "Model"
+	}
+	return out
 }
 
 func (g *schemaGen) objectFromTypeMeta(t reflect.Type) map[string]any {

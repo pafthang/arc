@@ -3,6 +3,7 @@ package arc
 import (
 	"context"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -34,6 +35,9 @@ func TestOpenAPIRootTagsServersAndSecuritySchemes(t *testing.T) {
 	if !strings.Contains(raw, `"securitySchemes":{"BearerAuth"`) {
 		t.Fatalf("security schemes missing: %s", raw)
 	}
+	if !strings.Contains(raw, `"application/problem+json"`) {
+		t.Fatalf("problem+json response missing: %s", raw)
+	}
 }
 
 func TestOpenAPIExamples(t *testing.T) {
@@ -59,5 +63,24 @@ func TestOpenAPIExamples(t *testing.T) {
 	}
 	if !strings.Contains(raw, `"responses"`) || !strings.Contains(raw, `"examples":{"ok":{"value":{"id":1}}}`) {
 		t.Fatalf("response examples missing: %s", raw)
+	}
+}
+
+func TestOpenAPIComponentNamesAreURIFragmentSafe(t *testing.T) {
+	type wrapped struct {
+		Data []map[string]any `json:"data"`
+	}
+	e := New()
+	Handle(e, http.MethodGet, "/safe", "safe_get", func(ctx context.Context, in *struct{}) (*Response[wrapped], error) {
+		return OK(wrapped{Data: []map[string]any{{"ok": true}}}), nil
+	})
+
+	raw := mustJSON(e.registry.OpenAPISpec())
+	if strings.Contains(raw, "#/components/schemas/") && strings.Contains(raw, "/internal/") {
+		t.Fatalf("unsafe component ref detected: %s", raw)
+	}
+	re := regexp.MustCompile(`"#/components/schemas/[^"]*[/\[\]]`)
+	if re.MatchString(raw) {
+		t.Fatalf("component reference contains unsafe chars: %s", raw)
 	}
 }
