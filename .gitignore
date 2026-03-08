@@ -1,4 +1,5 @@
 # Binaries
+!cmd/arc/main.go
 arc
 *.exe
 *.exe~
