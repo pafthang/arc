@@ -84,3 +84,24 @@ func TestOpenAPIComponentNamesAreURIFragmentSafe(t *testing.T) {
 		t.Fatalf("component reference contains unsafe chars: %s", raw)
 	}
 }
+
+func TestOpenAPIExplicitProblemResponses(t *testing.T) {
+	e := New()
+	Handle(e, http.MethodGet, "/secure", "secure_get", func(ctx context.Context, in *struct{}) (*Response[map[string]any], error) {
+		return OK(map[string]any{"ok": true}), nil
+	}, WithProblemResponseSpec(map[int]ProblemExampleSpec{
+		http.StatusUnauthorized:        {Code: "auth_unauthorized", Detail: "missing or invalid bearer token"},
+		http.StatusUnprocessableEntity: {Code: "validation_error", Detail: "validation failed"},
+	}))
+
+	raw := mustJSON(e.registry.OpenAPISpec())
+	if !strings.Contains(raw, `"401":{"content":{"application/problem+json"`) {
+		t.Fatalf("401 problem response missing: %s", raw)
+	}
+	if !strings.Contains(raw, `"422":{"content":{"application/problem+json"`) {
+		t.Fatalf("422 problem response missing: %s", raw)
+	}
+	if !strings.Contains(raw, `"code":"auth_unauthorized"`) || !strings.Contains(raw, `"code":"validation_error"`) {
+		t.Fatalf("problem response examples missing: %s", raw)
+	}
+}

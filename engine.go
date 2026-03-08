@@ -125,8 +125,24 @@ func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						out = append(out, m)
 					}
 				}
-				w.Header().Set("Allow", strings.Join(out, ", "))
-				w.WriteHeader(http.StatusNoContent)
+				rc := &RequestContext{
+					Writer:  sw,
+					Request: r,
+					Params:  map[string]string{},
+					Engine:  e,
+					Ctx:     r.Context(),
+				}
+				h := Handler(func(rc *RequestContext) error {
+					rc.Writer.Header().Set("Allow", strings.Join(out, ", "))
+					rc.Writer.WriteHeader(http.StatusNoContent)
+					return nil
+				})
+				for i := len(e.middleware) - 1; i >= 0; i-- {
+					h = e.middleware[i](h)
+				}
+				if err := h(rc); err != nil {
+					e.handleError(sw, r, err)
+				}
 				return
 			}
 		}
@@ -492,6 +508,8 @@ func registerTyped[Input any](e *Engine, method, path, operationID string, opts 
 		HasQueryDTO:      cfg.queryDTO,
 		RequestExamples:  cloneAnyMap(cfg.requestExamples),
 		ResponseExamples: cloneAnyMap(cfg.responseExamples),
+		ProblemStatuses:  append([]int{}, cfg.problemStatuses...),
+		ProblemExamples:  cloneProblemExamples(cfg.problemExamples),
 	})
 }
 
@@ -529,6 +547,8 @@ type routeConfig struct {
 	callbacks        map[string]any
 	requestExamples  map[string]any
 	responseExamples map[string]any
+	problemStatuses  []int
+	problemExamples  map[int]map[string]any
 	includeAllowlist []string
 	includeParamName string
 	queryDTO         bool
@@ -624,6 +644,54 @@ func WithResponseExamples(examples map[string]any) RouteOption {
 				continue
 			}
 			c.responseExamples[k] = v
+		}
+	}
+}
+
+// ProblemExampleSpec describes one problem+json response example.
+type ProblemExampleSpec struct {
+	Code   string
+	Detail string
+}
+
+// WithProblemResponses registers explicit problem+json responses for status codes.
+func WithProblemResponses(statuses ...int) RouteOption {
+	return func(c *routeConfig) {
+		c.problemStatuses = append(c.problemStatuses, statuses...)
+	}
+}
+
+// WithProblemResponseSpec registers explicit problem+json responses with examples.
+func WithProblemResponseSpec(spec map[int]ProblemExampleSpec) RouteOption {
+	return func(c *routeConfig) {
+		if len(spec) == 0 {
+			return
+		}
+		if c.problemExamples == nil {
+			c.problemExamples = map[int]map[string]any{}
+		}
+		for status, item := range spec {
+			if status < 100 || status > 599 {
+				continue
+			}
+			c.problemStatuses = append(c.problemStatuses, status)
+			title := strings.TrimSpace(http.StatusText(status))
+			if title == "" {
+				title = "Error"
+			}
+			value := map[string]any{
+				"type":      "about:blank",
+				"title":     title,
+				"status":    status,
+				"code":      strings.TrimSpace(item.Code),
+				"requestId": "req_123",
+			}
+			if detail := strings.TrimSpace(item.Detail); detail != "" {
+				value["detail"] = detail
+			}
+			c.problemExamples[status] = map[string]any{
+				"default": value,
+			}
 		}
 	}
 }
@@ -1067,6 +1135,17 @@ func copyStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func cloneProblemExamples(in map[int]map[string]any) map[int]map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[int]map[string]any, len(in))
+	for code, item := range in {
+		out[code] = cloneAnyMap(item)
 	}
 	return out
 }

@@ -200,6 +200,36 @@ func TestOptionsAutoAllow(t *testing.T) {
 	}
 }
 
+func TestOptionsAutoAllowRunsGlobalMiddleware(t *testing.T) {
+	type in struct{}
+	type out struct {
+		OK bool `json:"ok"`
+	}
+	e := New()
+	e.Use(func(next Handler) Handler {
+		return func(rc *RequestContext) error {
+			rc.Writer.Header().Set("X-Test-Middleware", "1")
+			return next(rc)
+		}
+	})
+	Handle(e, http.MethodGet, "/opts-mw", "opts_mw_get", func(ctx context.Context, in *in) (*Response[out], error) {
+		return OK(out{OK: true}), nil
+	})
+
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest(http.MethodOptions, "/opts-mw", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("X-Test-Middleware") != "1" {
+		t.Fatalf("expected middleware header to be set")
+	}
+	allow := w.Header().Get("Allow")
+	if !strings.Contains(allow, "GET") || !strings.Contains(allow, "OPTIONS") {
+		t.Fatalf("allow header missing expected methods: %s", allow)
+	}
+}
+
 func TestHandleVariants(t *testing.T) {
 	type in struct {
 		ID int `path:"id"`

@@ -44,6 +44,8 @@ type Operation struct {
 	HasQueryDTO      bool
 	RequestExamples  map[string]any
 	ResponseExamples map[string]any
+	ProblemStatuses  []int
+	ProblemExamples  map[int]map[string]any
 }
 
 // OperationRegistry stores all operations.
@@ -309,6 +311,24 @@ func (r *OperationRegistry) OpenAPISpec() map[string]any {
 				if len(op.ResponseExamples) > 0 {
 					entry["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["examples"] = normalizeExamples(op.ResponseExamples)
 				}
+			}
+		}
+		if len(op.ProblemStatuses) > 0 {
+			statuses := normalizeProblemStatuses(op.ProblemStatuses)
+			for _, code := range statuses {
+				key := strconv.Itoa(code)
+				resp := map[string]any{
+					"description": strings.TrimSpace(httpStatusText(code)),
+					"content": map[string]any{
+						"application/problem+json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/Problem"},
+						},
+					},
+				}
+				if ex := normalizeExamples(op.ProblemExamples[code]); len(ex) > 0 {
+					resp["content"].(map[string]any)["application/problem+json"].(map[string]any)["examples"] = ex
+				}
+				entry["responses"].(map[string]any)[key] = resp
 			}
 		}
 
@@ -648,6 +668,94 @@ func sanitizeSchemaName(name string) string {
 	if name == "" {
 		return ""
 	}
+	if strings.Contains(name, "[") && strings.Contains(name, "]") {
+		if generic := sanitizeGenericSchemaName(name); generic != "" {
+			return generic
+		}
+	}
+	return sanitizeSchemaToken(name)
+}
+
+func sanitizeGenericSchemaName(name string) string {
+	base, args, ok := splitGenericName(name)
+	if !ok {
+		return ""
+	}
+	base = sanitizeSchemaToken(typeShortName(base))
+	if base == "" {
+		return ""
+	}
+	argItems := splitGenericArgs(args)
+	parts := []string{base}
+	for _, item := range argItems {
+		token := sanitizeSchemaToken(typeShortName(item))
+		if token != "" {
+			parts = append(parts, token)
+		}
+	}
+	return strings.Join(parts, "_")
+}
+
+func splitGenericName(name string) (base, args string, ok bool) {
+	start := strings.IndexByte(name, '[')
+	if start <= 0 || !strings.HasSuffix(name, "]") {
+		return "", "", false
+	}
+	return strings.TrimSpace(name[:start]), strings.TrimSpace(name[start+1 : len(name)-1]), true
+}
+
+func splitGenericArgs(args string) []string {
+	if strings.TrimSpace(args) == "" {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	depth := 0
+	start := 0
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				part := strings.TrimSpace(args[start:i])
+				if part != "" {
+					out = append(out, part)
+				}
+				start = i + 1
+			}
+		}
+	}
+	last := strings.TrimSpace(args[start:])
+	if last != "" {
+		out = append(out, last)
+	}
+	return out
+}
+
+func typeShortName(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimLeft(v, "*[]")
+	for strings.HasPrefix(v, "[]") {
+		v = strings.TrimPrefix(v, "[]")
+	}
+	if idx := strings.LastIndexByte(v, '/'); idx >= 0 && idx+1 < len(v) {
+		v = v[idx+1:]
+	}
+	if idx := strings.LastIndexByte(v, '.'); idx >= 0 && idx+1 < len(v) {
+		v = v[idx+1:]
+	}
+	return strings.TrimSpace(v)
+}
+
+func sanitizeSchemaToken(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
 	var b strings.Builder
 	b.Grow(len(name))
 	for i := 0; i < len(name); i++ {
@@ -788,4 +896,45 @@ func normalizeExamples(in map[string]any) map[string]any {
 		out[name] = map[string]any{"value": v}
 	}
 	return out
+}
+
+func normalizeProblemStatuses(in []int) []int {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(in))
+	out := make([]int, 0, len(in))
+	for _, code := range in {
+		if code < 100 || code > 599 {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		out = append(out, code)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func httpStatusText(code int) string {
+	switch code {
+	case 400:
+		return "Bad Request"
+	case 401:
+		return "Unauthorized"
+	case 403:
+		return "Forbidden"
+	case 404:
+		return "Not Found"
+	case 409:
+		return "Conflict"
+	case 422:
+		return "Unprocessable Entity"
+	case 500:
+		return "Internal Server Error"
+	default:
+		return "Error"
+	}
 }
