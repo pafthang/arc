@@ -1,0 +1,22 @@
+# Binaries
+arc
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+cover.out
+
+# Go workspace / tooling
+bin/
+dist/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
