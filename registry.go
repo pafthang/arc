@@ -41,22 +41,56 @@ type Operation struct {
 	IncludeAllowlist []string
 	IncludeParamName string
 	HasQueryDTO      bool
+	RequestExamples  map[string]any
+	ResponseExamples map[string]any
 }
 
 // OperationRegistry stores all operations.
 type OperationRegistry struct {
-	mu  sync.RWMutex
-	ops []Operation
+	mu              sync.RWMutex
+	ops             []Operation
+	servers         []map[string]any
+	securitySchemes map[string]map[string]any
 }
 
 func NewOperationRegistry() *OperationRegistry {
-	return &OperationRegistry{}
+	return &OperationRegistry{
+		securitySchemes: map[string]map[string]any{},
+	}
 }
 
 func (r *OperationRegistry) Add(op Operation) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ops = append(r.ops, op)
+}
+
+// SetServers configures root OpenAPI servers list.
+func (r *OperationRegistry) SetServers(servers []map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]map[string]any, 0, len(servers))
+	for _, s := range servers {
+		if s == nil {
+			continue
+		}
+		out = append(out, cloneAnyMap(s))
+	}
+	r.servers = out
+}
+
+// RegisterSecurityScheme registers OpenAPI security scheme in components.
+func (r *OperationRegistry) RegisterSecurityScheme(name string, scheme map[string]any) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(scheme) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.securitySchemes == nil {
+		r.securitySchemes = map[string]map[string]any{}
+	}
+	r.securitySchemes[name] = cloneAnyMap(scheme)
 }
 
 func (r *OperationRegistry) Update(method, path, operationID string, fn func(*Operation)) {
@@ -88,6 +122,8 @@ func (r *OperationRegistry) List() []Operation {
 func (r *OperationRegistry) OpenAPISpec() map[string]any {
 	paths := map[string]any{}
 	components := map[string]any{"schemas": map[string]any{}}
+	usedTags := map[string]struct{}{}
+	usedSecurity := map[string]struct{}{}
 	schemaGen := newSchemaGen(components["schemas"].(map[string]any))
 
 	for _, op := range r.List() {
@@ -104,10 +140,19 @@ func (r *OperationRegistry) OpenAPISpec() map[string]any {
 		}
 		if len(op.Tags) > 0 {
 			entry["tags"] = op.Tags
+			for _, t := range op.Tags {
+				if strings.TrimSpace(t) == "" {
+					continue
+				}
+				usedTags[strings.TrimSpace(t)] = struct{}{}
+			}
 		}
 		if len(op.Security) > 0 {
 			items := make([]map[string][]string, 0, len(op.Security))
 			for _, s := range op.Security {
+				if strings.TrimSpace(s) != "" {
+					usedSecurity[strings.TrimSpace(s)] = struct{}{}
+				}
 				items = append(items, map[string][]string{s: {}})
 			}
 			entry["security"] = items
@@ -208,6 +253,9 @@ func (r *OperationRegistry) OpenAPISpec() map[string]any {
 						"schema": schemaGen.refOrInline(t),
 					},
 				}
+				if len(op.RequestExamples) > 0 {
+					content[op.InputContentType].(map[string]any)["examples"] = normalizeExamples(op.RequestExamples)
+				}
 				if op.HasFormBody {
 					schema := schemaGen.refOrInline(t)
 					content["application/x-www-form-urlencoded"] = map[string]any{"schema": schema}
@@ -236,13 +284,59 @@ func (r *OperationRegistry) OpenAPISpec() map[string]any {
 						},
 					},
 				}
+				if len(op.ResponseExamples) > 0 {
+					entry["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["examples"] = normalizeExamples(op.ResponseExamples)
+				}
 			}
 		}
 
 		paths[path].(map[string]any)[method] = entry
 	}
 
-	return map[string]any{
+	r.mu.RLock()
+	servers := make([]map[string]any, 0, len(r.servers))
+	for _, s := range r.servers {
+		servers = append(servers, cloneAnyMap(s))
+	}
+	securitySchemes := map[string]any{}
+	for name, scheme := range r.securitySchemes {
+		securitySchemes[name] = cloneAnyMap(scheme)
+	}
+	r.mu.RUnlock()
+
+	if len(usedSecurity) > 0 {
+		if len(securitySchemes) == 0 {
+			securitySchemes = map[string]any{}
+		}
+		for name := range usedSecurity {
+			if _, exists := securitySchemes[name]; exists {
+				continue
+			}
+			// Default scheme for operation security references.
+			securitySchemes[name] = map[string]any{
+				"type":         "http",
+				"scheme":       "bearer",
+				"bearerFormat": "JWT",
+			}
+		}
+	}
+	if len(securitySchemes) > 0 {
+		components["securitySchemes"] = securitySchemes
+	}
+
+	tags := make([]map[string]any, 0, len(usedTags))
+	if len(usedTags) > 0 {
+		names := make([]string, 0, len(usedTags))
+		for t := range usedTags {
+			names = append(names, t)
+		}
+		sort.Strings(names)
+		for _, t := range names {
+			tags = append(tags, map[string]any{"name": t})
+		}
+	}
+
+	out := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title":   "arc API",
@@ -251,6 +345,13 @@ func (r *OperationRegistry) OpenAPISpec() map[string]any {
 		"paths":      paths,
 		"components": components,
 	}
+	if len(tags) > 0 {
+		out["tags"] = tags
+	}
+	if len(servers) > 0 {
+		out["servers"] = servers
+	}
+	return out
 }
 
 func reflectType(v any) reflect.Type {
@@ -577,6 +678,30 @@ func cloneAnyMap(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+func normalizeExamples(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for name, v := range in {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if vm, ok := v.(map[string]any); ok {
+			if _, hasValue := vm["value"]; hasValue {
+				out[name] = cloneAnyMap(vm)
+				continue
+			}
+			if _, hasRef := vm["$ref"]; hasRef {
+				out[name] = cloneAnyMap(vm)
+				continue
+			}
+		}
+		out[name] = map[string]any{"value": v}
 	}
 	return out
 }

@@ -490,6 +490,8 @@ func registerTyped[Input any](e *Engine, method, path, operationID string, opts 
 		IncludeAllowlist: append([]string{}, cfg.includeAllowlist...),
 		IncludeParamName: cfg.includeParamName,
 		HasQueryDTO:      cfg.queryDTO,
+		RequestExamples:  cloneAnyMap(cfg.requestExamples),
+		ResponseExamples: cloneAnyMap(cfg.responseExamples),
 	})
 }
 
@@ -525,6 +527,8 @@ type routeConfig struct {
 	metadata         map[string]string
 	version          string
 	callbacks        map[string]any
+	requestExamples  map[string]any
+	responseExamples map[string]any
 	includeAllowlist []string
 	includeParamName string
 	queryDTO         bool
@@ -585,6 +589,42 @@ func WithCallbacks(callbacks map[string]any) RouteOption {
 			return
 		}
 		c.callbacks = cloneAnyMap(callbacks)
+	}
+}
+
+// WithRequestExamples attaches OpenAPI request body examples for operation input content type.
+func WithRequestExamples(examples map[string]any) RouteOption {
+	return func(c *routeConfig) {
+		if len(examples) == 0 {
+			return
+		}
+		if c.requestExamples == nil {
+			c.requestExamples = map[string]any{}
+		}
+		for k, v := range examples {
+			if strings.TrimSpace(k) == "" {
+				continue
+			}
+			c.requestExamples[k] = v
+		}
+	}
+}
+
+// WithResponseExamples attaches OpenAPI 200 application/json examples.
+func WithResponseExamples(examples map[string]any) RouteOption {
+	return func(c *routeConfig) {
+		if len(examples) == 0 {
+			return
+		}
+		if c.responseExamples == nil {
+			c.responseExamples = map[string]any{}
+		}
+		for k, v := range examples {
+			if strings.TrimSpace(k) == "" {
+				continue
+			}
+			c.responseExamples[k] = v
+		}
 	}
 }
 
@@ -862,6 +902,53 @@ func (JSONEncoder) Encode(w http.ResponseWriter, status int, body any) error {
 // Operations returns copy of registered operations.
 func (e *Engine) Operations() []Operation {
 	return e.registry.List()
+}
+
+// SetOpenAPIServers configures root OpenAPI servers list.
+func (e *Engine) SetOpenAPIServers(servers []map[string]any) {
+	if e == nil || e.registry == nil {
+		return
+	}
+	e.registry.SetServers(servers)
+}
+
+// AddOpenAPIServer appends one server entry with URL and optional description.
+func (e *Engine) AddOpenAPIServer(url, description string) {
+	if e == nil || e.registry == nil {
+		return
+	}
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return
+	}
+	server := map[string]any{"url": url}
+	if strings.TrimSpace(description) != "" {
+		server["description"] = strings.TrimSpace(description)
+	}
+	e.registry.mu.RLock()
+	curr := make([]map[string]any, 0, len(e.registry.servers)+1)
+	for _, s := range e.registry.servers {
+		curr = append(curr, cloneAnyMap(s))
+	}
+	e.registry.mu.RUnlock()
+	curr = append(curr, server)
+	e.registry.SetServers(curr)
+}
+
+// RegisterOpenAPISecurityScheme registers components.securitySchemes entry.
+func (e *Engine) RegisterOpenAPISecurityScheme(name string, scheme map[string]any) {
+	if e == nil || e.registry == nil {
+		return
+	}
+	e.registry.RegisterSecurityScheme(name, scheme)
+}
+
+// OpenAPISpec returns current OpenAPI spec as map.
+func (e *Engine) OpenAPISpec() map[string]any {
+	if e == nil || e.registry == nil {
+		return nil
+	}
+	return e.registry.OpenAPISpec()
 }
 
 // MarshalOpenAPIJSON renders current OpenAPI spec as JSON bytes.

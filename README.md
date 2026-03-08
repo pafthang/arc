@@ -65,6 +65,7 @@ Example:
 go run ./cmd/arc -format json -out openapi.json
 go run ./cmd/arc -format yaml -out openapi.yaml
 go run ./cmd/arc -format json -stdout
+go run ./cmd/arc -format json -out openapi.json -validate-quality
 ```
 
 Flags:
@@ -72,6 +73,21 @@ Flags:
 - `-format` `json|yaml` (default: `json`)
 - `-stdout` print spec to stdout instead of writing file
 - `-with-system` include system routes (`/openapi.json`, `/openapi.yaml`, `/docs`, `/schemas`)
+- `-validate-quality` enforce OpenAPI quality gates and fail with exit code `2` on violations
+- `-require-tags` require root `tags` list (default: `true`)
+- `-require-servers` require root `servers` list (default: `true`)
+- `-require-security-schemes` comma-separated required `components.securitySchemes` names (default: `BearerAuth`)
+- `-require-examples` require at least one operation-level request/response example (default: `false`)
+
+CI usage example:
+
+```bash
+go run ./cmd/arc -format json -out openapi/openapi.json \
+  -validate-quality \
+  -require-tags \
+  -require-servers \
+  -require-security-schemes BearerAuth
+```
 
 To plug your own route registrations for generation, add a file in `cmd/arc` and assign `RegisterRoutes` in `init()`:
 
